@@ -3,4 +3,3 @@ requests
 beautifulsoup4
 pandas
 altair
-vega_datasets
