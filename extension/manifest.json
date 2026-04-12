@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "Price Tracker Pro",
+  "version": "1.0.0",
+  "description": "Track prices, visualize history, compare offers, and manage price alerts on ecommerce sites.",
+  "permissions": [
+    "storage",
+    "notifications",
+    "tabs",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://*.amazon.in/*",
+    "https://*.amazon.com/*",
+    "https://*.flipkart.com/*"
+  ],
+  "background": {
+    "service_worker": "src/background/service-worker.js"
+  },
+  "action": {
+    "default_title": "Price Tracker Pro",
+    "default_popup": "src/popup/popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.amazon.in/*",
+        "https://*.amazon.com/*",
+        "https://*.flipkart.com/*"
+      ],
+      "js": [
+        "src/shared/utils.js",
+        "src/shared/storage.js",
+        "src/content/adapters.js",
+        "src/content/compare.js",
+        "src/content/coupons.js",
+        "src/content/content-script.js"
+      ],
+      "css": [
+        "src/content/content.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

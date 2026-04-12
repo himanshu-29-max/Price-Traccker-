@@ -1,0 +1,19 @@
+const express = require("express");
+const { pool } = require("../../db/pool");
+
+const router = express.Router();
+
+router.get("/", async (req, res, next) => {
+  try {
+    await pool.query("SELECT 1");
+    res.json({
+      status: "ok",
+      service: "price-tracker-server",
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+module.exports = { healthRouter: router };

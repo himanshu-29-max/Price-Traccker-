@@ -1,0 +1,175 @@
+#pt-root {
+  font-family: "Segoe UI", Tahoma, sans-serif;
+}
+
+.pt-shell {
+  position: relative;
+  z-index: 2147483000;
+  margin: 16px 0;
+  border-radius: 18px;
+  border: 1px solid rgba(14, 45, 38, 0.08);
+  background:
+    radial-gradient(circle at top left, rgba(196, 234, 220, 0.65), transparent 38%),
+    linear-gradient(180deg, #fcf8f1 0%, #ffffff 100%);
+  box-shadow: 0 20px 40px rgba(13, 44, 36, 0.09);
+  overflow: hidden;
+}
+
+.pt-toggle {
+  width: 100%;
+  border: 0;
+  background: linear-gradient(90deg, #0c5d49 0%, #12785f 100%);
+  color: #fffdf8;
+  font-weight: 700;
+  font-size: 14px;
+  padding: 12px 16px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pt-panel {
+  padding: 16px;
+}
+
+.pt-collapsed .pt-panel {
+  display: none;
+}
+
+.pt-header {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.pt-live-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: #44615a;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pt-live-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #11a37f;
+  box-shadow: 0 0 0 6px rgba(17, 163, 127, 0.12);
+}
+
+.pt-kicker {
+  margin: 0 0 4px;
+  color: #12785f;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.pt-title {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.3;
+  color: #13231e;
+}
+
+.pt-price {
+  white-space: nowrap;
+  font-size: 20px;
+  font-weight: 800;
+  color: #0c5d49;
+}
+
+.pt-section {
+  padding-top: 14px;
+  margin-top: 14px;
+  border-top: 1px solid rgba(11, 53, 42, 0.08);
+}
+
+.pt-section-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #44615a;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.pt-chart-shell {
+  display: grid;
+  gap: 8px;
+}
+
+.pt-chart {
+  width: 100%;
+  height: 132px;
+  display: block;
+}
+
+.pt-chart-line {
+  fill: none;
+  stroke: #12785f;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.pt-chart-range {
+  display: flex;
+  justify-content: space-between;
+  color: #3e5e56;
+  font-size: 12px;
+}
+
+.pt-empty-state,
+.pt-helper {
+  color: #526e67;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.pt-alert-form {
+  display: flex;
+  gap: 8px;
+}
+
+.pt-alert-form input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid rgba(12, 93, 73, 0.2);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #fff;
+}
+
+.pt-alert-form button {
+  border: 0;
+  border-radius: 12px;
+  padding: 10px 14px;
+  background: #0c5d49;
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.pt-compare-box {
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(12, 93, 73, 0.06);
+}
+
+@media (max-width: 960px) {
+  .pt-header {
+    flex-direction: column;
+  }
+
+  .pt-price {
+    font-size: 18px;
+  }
+}

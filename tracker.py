@@ -23,6 +23,8 @@ PRICE_SELECTORS = {
     "flipkart": [
         (By.CLASS_NAME, "Nx9bqj"),
         (By.CSS_SELECTOR, "[class*='Nx9bqj']"),
+        (By.CSS_SELECTOR, "div._30jeq3"),
+        (By.CSS_SELECTOR, "div._16Jk6d"),
     ],
     "amazon": [
         (By.ID, "priceblock_dealprice"),
@@ -31,6 +33,8 @@ PRICE_SELECTORS = {
         (By.CSS_SELECTOR, ".a-price .a-offscreen"),
     ],
     "generic": [
+        (By.CSS_SELECTOR, 'meta[property="product:price:amount"]'),
+        (By.CSS_SELECTOR, 'meta[itemprop="price"]'),
         (By.CSS_SELECTOR, "[itemprop='price']"),
         (By.CSS_SELECTOR, ".price"),
         (By.CSS_SELECTOR, "[class*='price']"),
@@ -152,6 +156,7 @@ def get_or_create_product(data, url, title=None, target_price=None):
 def extract_title(driver):
     for locator in [
         (By.CSS_SELECTOR, "span.B_NuCI"),
+        (By.CSS_SELECTOR, "div._4rR01T"),
         (By.ID, "productTitle"),
         (By.CSS_SELECTOR, "h1"),
         (By.TAG_NAME, "title"),
@@ -173,13 +178,25 @@ def read_price_from_page(driver, store):
             element = WebDriverWait(driver, 4).until(
                 EC.presence_of_element_located((by, selector))
             )
-            price = extract_price(element.text or element.get_attribute("content"))
+            price = extract_price(
+                element.text
+                or element.get_attribute("content")
+                or element.get_attribute("value")
+            )
             if price:
                 return price
         except Exception:
             continue
 
     page_text = driver.page_source
+    meta_match = re.search(
+        r'<meta[^>]+(?:property|itemprop)=["\'](?:product:price:amount|price)["\'][^>]+content=["\'](?P<price>[^"\']+)["\']',
+        page_text,
+        re.IGNORECASE,
+    )
+    if meta_match:
+        return extract_price(meta_match.group("price"))
+
     match = re.search(r'"price"\s*:\s*"?(?P<price>\d[\d,\.]*)"?', page_text)
     if match:
         return extract_price(match.group("price"))
