@@ -4,35 +4,56 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
-import os
+import pandas as pd
+import json, os, time
+from datetime import datetime
 
-# --- CLOUD-OPTIMIZED SCRAPER ---
+# --- CONFIG ---
+DATA_FILE = "price_history.json"
+
+st.set_page_config(page_title="Price Tracker", layout="wide")
+st.title("💰 Smart Price Tracker")
+
+# Cloud-Friendly Scraper
 def get_live_price(url):
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    
-    # Streamlit Cloud par Chrome ka path set karna
-    chrome_options.binary_location = "/usr/bin/chromium"
     
     try:
-        # Service setup bina webdriver-manager ke (Cloud handles it via packages.txt)
-        service = Service("/usr/bin/chromedriver")
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-        
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
         driver.get(url)
-        st.write("Page load ho gaya...") # Debugging ke liye
+        time.sleep(5)
         
-        # Price nikalo
-        price_tag = driver.find_element(By.CLASS_NAME, "Nx9bqj")
-        p = int(''.join(filter(str.isdigit, price_tag.text)))
-        
+        # Flipkart price selector
+        price_element = driver.find_element(By.CLASS_NAME, "Nx9bqj")
+        price_text = price_element.text
         driver.quit()
-        return p
+        
+        return int(''.join(filter(str.isdigit, price_text)))
     except Exception as e:
-        st.error(f"Error detail: {e}")
         return None
 
-# Baki ka UI code (Update Price button etc.) waisa hi rahega
+# UI Sidebar
+url_input = st.sidebar.text_input("Product Link:")
+target_p = st.sidebar.number_input("Target Price:", value=1000)
+
+if st.sidebar.button("Update Price"):
+    if url_input:
+        with st.spinner('Checking...'):
+            curr_p = get_live_price(url_input)
+            if curr_p:
+                st.metric("Live Price", f"₹{curr_p}")
+                # History Save Logic
+                if os.path.exists(DATA_FILE):
+                    with open(DATA_FILE, 'r') as f: data = json.load(f)
+                else: data = {"history": []}
+                
+                data["history"].append({"Price": curr_p, "Date": datetime.now().strftime("%H:%M")})
+                with open(DATA_FILE, 'w') as f: json.dump(data, f)
+                
+                df = pd.DataFrame(data["history"])
+                st.line_chart(df.set_index("Date"))
+            else:
+                st.error("Could not fetch price. Check link.")
