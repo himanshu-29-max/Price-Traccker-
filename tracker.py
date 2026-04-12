@@ -3,38 +3,44 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import pandas as pd
 import json, os, time
 from datetime import datetime
 
-# --- PAGE CONFIG ---
-st.set_page_config(page_title="Price Tracker", layout="wide")
+st.set_page_config(page_title="Price Tracker Pro", layout="wide")
 st.title("💰 Smart Price Tracker")
 
-# Cloud-Specific Scraper
 def get_live_price(url):
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    # Real browser jaisa dikhne ke liye User-Agent
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36")
     
-    # Ye do line Streamlit Cloud par Chrome chalane ke liye sabse zaruri hain
     chrome_options.binary_location = "/usr/bin/chromium"
-    service = Service("/usr/bin/chromedriver")
     
     try:
+        service = Service("/usr/bin/chromedriver")
         driver = webdriver.Chrome(service=service, options=chrome_options)
         driver.get(url)
-        time.sleep(7) # Cloud thoda slow ho sakta hai, isliye 7 sec wait
         
-        # Flipkart price selector
-        price_element = driver.find_element(By.CLASS_NAME, "Nx9bqj")
+        # 15 second tak wait karega jab tak price wala element na mil jaye
+        wait = WebDriverWait(driver, 15)
+        
+        # Flipkart ke naye price selectors (Nx9bqj sabse common hai)
+        price_element = wait.until(EC.presence_of_element_located((By.CLASS_NAME, "Nx9bqj")))
+        
         price_text = price_element.text
         driver.quit()
         
         return int(''.join(filter(str.isdigit, price_text)))
     except Exception as e:
         print(f"Error: {e}")
+        driver.quit()
         return None
 
 # --- UI ---
@@ -43,13 +49,13 @@ target_p = st.sidebar.number_input("Target Price (₹):", value=1000)
 
 if st.sidebar.button("Update Price"):
     if url_input:
-        with st.spinner('Checking price on cloud server...'):
+        with st.spinner('Checking price on server... Isme 10-15 seconds lag sakte hain.'):
             curr_p = get_live_price(url_input)
             if curr_p:
                 st.balloons()
                 st.metric("Live Price", f"₹{curr_p}")
                 
-                # Simple History Management
+                # History data
                 data_file = "price_history.json"
                 if os.path.exists(data_file):
                     with open(data_file, 'r') as f: data = json.load(f)
@@ -61,4 +67,4 @@ if st.sidebar.button("Update Price"):
                 df = pd.DataFrame(data["history"])
                 st.line_chart(df.set_index("Date"))
             else:
-                st.error("Price fetch nahi ho paya. Ek baar check karo link sahi hai na?")
+                st.error("Bhai, Flipkart ne block kiya ya link galat hai. Ek baar normal link open karke dekho.")
