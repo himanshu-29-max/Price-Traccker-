@@ -1,93 +1,429 @@
-import streamlit as st
-import requests
-from bs4 import BeautifulSoup
-import pandas as pd
-import altair as alt
-import json, os, re
+import json
+import os
+import re
 from datetime import datetime
+from urllib.parse import quote_plus, urlparse
 
-# --- CONFIG ---
-SCRAPER_API_KEY = "98140924c53c3da8de89d24bccc92568" 
+import pandas as pd
+import plotly.express as px
+import requests
+import streamlit as st
+from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
+from webdriver_manager.chrome import ChromeDriverManager
 
-st.set_page_config(page_title="Price Master Pro", layout="wide")
+DATA_FILE = "price_history.json"
+SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "")
+PRICE_SELECTORS = {
+    "flipkart": [
+        (By.CLASS_NAME, "Nx9bqj"),
+        (By.CSS_SELECTOR, "[class*='Nx9bqj']"),
+    ],
+    "amazon": [
+        (By.ID, "priceblock_dealprice"),
+        (By.ID, "priceblock_ourprice"),
+        (By.ID, "priceblock_saleprice"),
+        (By.CSS_SELECTOR, ".a-price .a-offscreen"),
+    ],
+    "generic": [
+        (By.CSS_SELECTOR, "[itemprop='price']"),
+        (By.CSS_SELECTOR, ".price"),
+        (By.CSS_SELECTOR, "[class*='price']"),
+    ],
+}
 
-def get_live_price(url):
-    proxy_url = f"http://api.scraperapi.com?api_key={SCRAPER_API_KEY}&url={url}&render=true&wait=5000"
+st.set_page_config(page_title="Price Tracker Pro", layout="wide")
+st.title("Universal Price Tracker")
+st.caption("Track product prices with stronger scraping, smarter history, and a cleaner dashboard.")
+
+
+def normalize_url(url):
+    return url.strip()
+
+
+def detect_store(url):
+    host = urlparse(url).netloc.lower()
+    if "flipkart" in host:
+        return "flipkart"
+    if "amazon" in host:
+        return "amazon"
+    return "generic"
+
+
+def extract_price(value):
+    digits = "".join(ch for ch in str(value) if ch.isdigit())
+    return int(digits) if digits else None
+
+
+def parse_timestamp(value):
+    if not value:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%d-%m %H:%M"):
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def format_money(value):
+    return f"Rs {value:,.0f}" if value is not None else "N/A"
+
+
+def build_driver():
+    chrome_options = Options()
+    chrome_options.add_argument("--headless=new")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument(
+        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    )
+    service = Service(ChromeDriverManager().install())
+    return webdriver.Chrome(service=service, options=chrome_options)
+
+
+def load_data():
+    if not os.path.exists(DATA_FILE):
+        return {"products": {}}
+
+    with open(DATA_FILE, "r", encoding="utf-8") as file:
+        raw = json.load(file)
+
+    if "products" in raw:
+        raw.setdefault("products", {})
+        return raw
+
+    history = raw.get("history", [])
+    migrated_history = []
+    for entry in history:
+        timestamp = parse_timestamp(entry.get("Date"))
+        migrated_history.append(
+            {
+                "price": entry.get("Price"),
+                "checked_at": (
+                    timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                    if timestamp
+                    else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                ),
+            }
+        )
+
+    return {
+        "products": {
+            "legacy": {
+                "title": "Imported history",
+                "url": "",
+                "target_price": None,
+                "history": migrated_history,
+            }
+        }
+    }
+
+
+def save_data(data):
+    with open(DATA_FILE, "w", encoding="utf-8") as file:
+        json.dump(data, file, indent=2)
+
+
+def get_or_create_product(data, url, title=None, target_price=None):
+    products = data.setdefault("products", {})
+    if url not in products:
+        products[url] = {
+            "title": title or "Untitled product",
+            "url": url,
+            "target_price": target_price,
+            "history": [],
+        }
+    product = products[url]
+    if title:
+        product["title"] = title
+    if target_price is not None:
+        product["target_price"] = int(target_price)
+    return product
+
+
+def extract_title(driver):
+    for locator in [
+        (By.CSS_SELECTOR, "span.B_NuCI"),
+        (By.ID, "productTitle"),
+        (By.CSS_SELECTOR, "h1"),
+        (By.TAG_NAME, "title"),
+    ]:
+        try:
+            element = driver.find_element(*locator)
+            text = element.text.strip()
+            if text:
+                return text
+        except Exception:
+            continue
+    return "Untitled product"
+
+
+def read_price_from_page(driver, store):
+    selectors = PRICE_SELECTORS.get(store, []) + PRICE_SELECTORS["generic"]
+    for by, selector in selectors:
+        try:
+            element = WebDriverWait(driver, 4).until(
+                EC.presence_of_element_located((by, selector))
+            )
+            price = extract_price(element.text or element.get_attribute("content"))
+            if price:
+                return price
+        except Exception:
+            continue
+
+    page_text = driver.page_source
+    match = re.search(r'"price"\s*:\s*"?(?P<price>\d[\d,\.]*)"?', page_text)
+    if match:
+        return extract_price(match.group("price"))
+    return None
+
+
+def scrape_with_api(url, store):
+    if not SCRAPER_API_KEY:
+        return {"title": None, "price": None}
+
+    proxy_url = (
+        "http://api.scraperapi.com?api_key="
+        f"{SCRAPER_API_KEY}&url={quote_plus(url)}&render=true&wait=5000"
+    )
+
     try:
         response = requests.get(proxy_url, timeout=120)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.content, "html.parser")
-            # Sabse accurate price tags
-            main_tag = soup.find("div", {"class": "Nx9bqj C6R3Y2"}) or soup.find("div", {"class": "Nx9bqj"})
-            if main_tag:
-                return int(re.sub(r'[^\d]', '', main_tag.text))
+        response.raise_for_status()
+    except Exception:
+        return {"title": None, "price": None}
+
+    soup = BeautifulSoup(response.content, "html.parser")
+
+    title = None
+    for selector in ["span.B_NuCI", "#productTitle", "h1", "title"]:
+        node = soup.select_one(selector)
+        if node and node.get_text(strip=True):
+            title = node.get_text(strip=True)
+            break
+
+    price_candidates = []
+    if store == "flipkart":
+        price_candidates.extend(
+            [
+                soup.select_one("div.Nx9bqj.C6R3Y2"),
+                soup.select_one("div.Nx9bqj"),
+            ]
+        )
+    if store == "amazon":
+        price_candidates.extend(
+            [
+                soup.select_one("span.a-price-whole"),
+                soup.select_one(".a-price .a-offscreen"),
+            ]
+        )
+    price_candidates.extend(
+        [
+            soup.select_one("[itemprop='price']"),
+            soup.select_one(".price"),
+            soup.select_one("[class*='price']"),
+        ]
+    )
+
+    for candidate in price_candidates:
+        if not candidate:
+            continue
+        price = extract_price(candidate.get_text(" ", strip=True) or candidate.get("content"))
+        if price:
+            return {"title": title, "price": price}
+
+    return {"title": title, "price": None}
+
+
+def get_live_product_details(url):
+    store = detect_store(url)
+    try:
+        driver = build_driver()
+        try:
+            driver.get(url)
+            WebDriverWait(driver, 20).until(
+                lambda current_driver: current_driver.execute_script("return document.readyState")
+                == "complete"
+            )
+            title = extract_title(driver)
+            price = read_price_from_page(driver, store)
+            if price is not None:
+                return {"title": title, "price": price, "store": store}
+        finally:
+            driver.quit()
+    except Exception:
+        pass
+
+    fallback = scrape_with_api(url, store)
+    return {
+        "title": fallback["title"] or "Untitled product",
+        "price": fallback["price"],
+        "store": store,
+    }
+
+
+def append_price_point(product, price):
+    product.setdefault("history", []).append(
+        {
+            "price": price,
+            "checked_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    )
+
+
+def product_history_frame(product):
+    history = product.get("history", [])
+    frame = pd.DataFrame(history)
+    if frame.empty:
+        return frame
+    frame["checked_at"] = pd.to_datetime(frame["checked_at"])
+    return frame.sort_values("checked_at")
+
+
+def product_summary(product):
+    frame = product_history_frame(product)
+    if frame.empty:
         return None
-    except:
-        return None
 
-# --- UI ---
-st.title("Universal Price Tracker")
-st.write("Professional Price History Graph (Buyhatke Style)")
+    latest = int(frame["price"].iloc[-1])
+    first = int(frame["price"].iloc[0])
+    lowest = int(frame["price"].min())
+    highest = int(frame["price"].max())
+    average = float(frame["price"].mean())
+    previous = int(frame["price"].iloc[-2]) if len(frame) > 1 else None
+    return {
+        "latest": latest,
+        "first": first,
+        "lowest": lowest,
+        "highest": highest,
+        "average": average,
+        "previous": previous,
+        "checks": len(frame),
+        "frame": frame,
+    }
 
-# Sidebar
-st.sidebar.header("Settings")
-product_url = st.sidebar.text_input("Product Link:")
-target_p = st.sidebar.number_input("Target Price (Rs):", value=3000)
 
-if st.sidebar.button("Track Price"):
-    if product_url:
-        with st.spinner("Bypassing security and loading professional graph..."):
-            curr_p = get_live_price(product_url)
-            
-            if curr_p:
-                st.balloons()
-                st.metric("Current Price", f"Rs {curr_p:,}")
-                
-                # Data Management
-                log_file = "history_pro.json"
-                if os.path.exists(log_file):
-                    with open(log_file, "r") as f: data = json.load(f)
-                else: data = {"history": []}
-                
-                data["history"].append({"Price": curr_p, "Time": datetime.now().isoformat()})
-                with open(log_file, "w") as f: json.dump(data, f)
-                
-                # --- PROFESSIONAL AREA CHART (Altair) ---
-                df = pd.DataFrame(data["history"])
-                df['Time'] = pd.to_datetime(df['Time'])
-                
-                # Area chart with gradient effect
-                area = alt.Chart(df).mark_area(
-                    line={'color':'#FF4B4B'},
-                    color=alt.Gradient(
-                        gradient='linear',
-                        stops=[alt.GradientStop(color='white', offset=0),
-                               alt.GradientStop(color='#FF4B4B', offset=1)],
-                        x1=1, x2=1, y1=1, y2=0
-                    ),
-                    interpolate='monotone',
-                    opacity=0.4
-                ).encode(
-                    x=alt.X('Time:T', title='Time'),
-                    y=alt.Y('Price:Q', title='Price (Rs)', scale=alt.Scale(zero=False))
-                )
+def render_product_dashboard(product):
+    summary = product_summary(product)
+    if not summary:
+        st.info("No price history available for this product yet.")
+        return
 
-                # Add points/dots
-                points = alt.Chart(df).mark_point(filled=True, size=60, color='#FF4B4B').encode(
-                    x='Time:T',
-                    y='Price:Q'
-                )
+    latest = summary["latest"]
+    previous = summary["previous"]
+    target_price = product.get("target_price")
 
-                final_chart = (area + points).properties(height=400).interactive()
-                st.altair_chart(final_chart, use_container_width=True)
-                
-            else:
-                st.error("Price fetch nahi ho paya. Ek baar complete product link check karein.")
+    top_cols = st.columns(4)
+    top_cols[0].metric(
+        "Current price",
+        format_money(latest),
+        None if previous is None else format_money(latest - previous),
+    )
+    top_cols[1].metric("Lowest seen", format_money(summary["lowest"]))
+    top_cols[2].metric("Highest seen", format_money(summary["highest"]))
+    top_cols[3].metric("Average", format_money(summary["average"]))
+
+    if target_price:
+        if latest <= target_price:
+            st.success(
+                f"Target hit: {format_money(latest)} is at or below your target of {format_money(target_price)}."
+            )
+        else:
+            st.warning(f"Need {format_money(latest - target_price)} more drop to reach target.")
+
+    frame = summary["frame"].copy()
+    frame["Checked At"] = frame["checked_at"]
+    frame["Price"] = frame["price"]
+
+    st.plotly_chart(
+        px.line(
+            frame,
+            x="Checked At",
+            y="Price",
+            markers=True,
+            title="Price trend",
+            template="plotly_white",
+        ),
+        use_container_width=True,
+    )
+
+    recent = frame[["Checked At", "Price"]].sort_values("Checked At", ascending=False).head(10)
+    st.dataframe(recent, use_container_width=True, hide_index=True)
+    st.download_button(
+        "Download history as CSV",
+        data=frame[["Checked At", "Price"]].to_csv(index=False).encode("utf-8"),
+        file_name="price_history.csv",
+        mime="text/csv",
+    )
+
+
+data = load_data()
+
+st.sidebar.header("Tracker settings")
+url_input = normalize_url(st.sidebar.text_input("Product link"))
+target_price = st.sidebar.number_input("Target price (Rs)", min_value=0, value=3000, step=100)
+
+if st.sidebar.button("Update price", use_container_width=True):
+    if not url_input:
+        st.sidebar.error("Enter a product link first.")
+    elif not url_input.startswith(("http://", "https://")):
+        st.error("Please enter the full product URL, including https://")
     else:
-        st.warning("Pehle product ka link dalo!")
+        with st.spinner("Fetching the latest product price..."):
+            details = get_live_product_details(url_input)
+            if details["price"] is None:
+                st.error("Could not detect the product price on that page.")
+            else:
+                product = get_or_create_product(
+                    data,
+                    url_input,
+                    title=details["title"],
+                    target_price=target_price,
+                )
+                append_price_point(product, details["price"])
+                save_data(data)
 
-if st.sidebar.button("Reset History"):
-    if os.path.exists("history_pro.json"):
-        os.remove("history_pro.json")
-        st.sidebar.success("History deleted!")
-        st.rerun()
+                st.success(f"Updated {product['title']}")
+                if len(product.get("history", [])) == 1:
+                    st.balloons()
+
+products = data.get("products", {})
+
+if st.sidebar.button("Clear all history", use_container_width=True):
+    if os.path.exists(DATA_FILE):
+        os.remove(DATA_FILE)
+    st.sidebar.success("Saved history cleared.")
+    st.rerun()
+
+if not products:
+    st.info("Add a product link from the sidebar and click Update price to build your tracker.")
+else:
+    product_options = {
+        f"{item.get('title', 'Untitled product')} ({detect_store(url).title()})": url
+        for url, item in products.items()
+    }
+    selected_label = st.selectbox("Tracked products", list(product_options.keys()))
+    selected_url = product_options[selected_label]
+    selected_product = products[selected_url]
+
+    st.subheader(selected_product.get("title", "Tracked product"))
+    if selected_product.get("url"):
+        st.caption(selected_product["url"])
+
+    summary = product_summary(selected_product)
+    if summary:
+        trend = summary["latest"] - summary["first"]
+        trend_label = "up" if trend > 0 else "down" if trend < 0 else "flat"
+        st.write(
+            f"{summary['checks']} checks recorded. Overall trend is {trend_label} by {format_money(abs(trend))} since the first capture."
+        )
+
+    render_product_dashboard(selected_product)
