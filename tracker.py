@@ -79,6 +79,23 @@ def format_money(value):
     return f"Rs {value:,.0f}" if value is not None else "N/A"
 
 
+def build_headers():
+    return {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "en-IN,en;q=0.9",
+    }
+
+
+def parse_product_from_html(html, store):
+    soup = BeautifulSoup(html, "html.parser")
+    title = extract_title_from_soup(soup)
+    price = extract_price_from_soup(soup, store)
+    return {"title": title or "Untitled product", "price": price}
+
+
 def build_driver():
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
@@ -171,6 +188,133 @@ def extract_title(driver):
     return "Untitled product"
 
 
+def extract_title_from_soup(soup):
+    for selector in [
+        "span.B_NuCI",
+        "div._4rR01T",
+        "#productTitle",
+        "h1",
+        'meta[property="og:title"]',
+        "title",
+    ]:
+        node = soup.select_one(selector)
+        text = ""
+        if node:
+            text = node.get("content") or node.get_text(" ", strip=True)
+        if text:
+            return text.strip()
+    return None
+
+
+def extract_price_from_soup(soup, store):
+    selectors = []
+    if store == "flipkart":
+        selectors.extend(
+            [
+                "div.Nx9bqj.CxhGGd",
+                "div.Nx9bqj",
+                "div._30jeq3",
+                "div._16Jk6d",
+            ]
+        )
+    elif store == "amazon":
+        selectors.extend(
+            [
+                "#corePriceDisplay_desktop_feature_div .a-price .a-offscreen",
+                "#priceblock_dealprice",
+                "#priceblock_ourprice",
+                "#priceblock_saleprice",
+                ".a-price .a-offscreen",
+            ]
+        )
+
+    selectors.extend(
+        [
+            'meta[property="product:price:amount"]',
+            'meta[itemprop="price"]',
+            "[itemprop='price']",
+            ".price",
+            "[class*='price']",
+        ]
+    )
+
+    for selector in selectors:
+        node = soup.select_one(selector)
+        if not node:
+            continue
+        value = node.get("content") or node.get("value") or node.get_text(" ", strip=True)
+        price = extract_price(value)
+        if price:
+            return price
+
+    for script in soup.select('script[type="application/ld+json"]'):
+        try:
+            payload = json.loads(script.get_text(strip=True))
+        except json.JSONDecodeError:
+            continue
+        price = extract_price_from_jsonld(payload)
+        if price:
+            return price
+
+    html = str(soup)
+    for pattern in [
+        r'"price"\s*:\s*"?(?P<price>\d[\d,\.]*)"?',
+        r'"sellingPrice"\s*:\s*"?(?P<price>\d[\d,\.]*)"?',
+        r'"finalPrice"\s*:\s*"?(?P<price>\d[\d,\.]*)"?',
+        r'"offerPrice"\s*:\s*"?(?P<price>\d[\d,\.]*)"?',
+    ]:
+        match = re.search(pattern, html, re.IGNORECASE)
+        if match:
+            price = extract_price(match.group("price"))
+            if price:
+                return price
+
+    return None
+
+
+def extract_price_from_jsonld(payload):
+    queue = payload if isinstance(payload, list) else [payload]
+    while queue:
+        current = queue.pop(0)
+        if isinstance(current, list):
+            queue.extend(current)
+            continue
+        if not isinstance(current, dict):
+            continue
+        if "@graph" in current and isinstance(current["@graph"], list):
+            queue.extend(current["@graph"])
+
+        offers = current.get("offers")
+        if isinstance(offers, dict):
+            for key in ["price", "lowPrice", "highPrice"]:
+                price = extract_price(offers.get(key))
+                if price:
+                    return price
+        if isinstance(offers, list):
+            queue.extend(offers)
+
+        for key in ["price", "lowPrice", "highPrice"]:
+            price = extract_price(current.get(key))
+            if price:
+                return price
+    return None
+
+
+def dismiss_store_popups(driver, store):
+    if store != "flipkart":
+        return
+    for locator in [
+        (By.CSS_SELECTOR, "button._2KpZ6l._2doB4z"),
+        (By.CSS_SELECTOR, "button[class*='_2doB4z']"),
+    ]:
+        try:
+            button = WebDriverWait(driver, 3).until(EC.element_to_be_clickable(locator))
+            button.click()
+            return
+        except Exception:
+            continue
+
+
 def read_price_from_page(driver, store):
     selectors = PRICE_SELECTORS.get(store, []) + PRICE_SELECTORS["generic"]
     for by, selector in selectors:
@@ -201,6 +345,17 @@ def read_price_from_page(driver, store):
     if match:
         return extract_price(match.group("price"))
     return None
+
+
+def scrape_with_requests(url, store):
+    try:
+        response = requests.get(url, headers=build_headers(), timeout=30)
+        response.raise_for_status()
+    except Exception:
+        return {"title": None, "price": None}
+
+    parsed = parse_product_from_html(response.text, store)
+    return parsed
 
 
 def scrape_with_api(url, store):
@@ -270,14 +425,31 @@ def get_live_product_details(url):
                 lambda current_driver: current_driver.execute_script("return document.readyState")
                 == "complete"
             )
+            dismiss_store_popups(driver, store)
             title = extract_title(driver)
             price = read_price_from_page(driver, store)
             if price is not None:
                 return {"title": title, "price": price, "store": store}
+
+            parsed_html = parse_product_from_html(driver.page_source, store)
+            if parsed_html["price"] is not None:
+                return {
+                    "title": parsed_html["title"],
+                    "price": parsed_html["price"],
+                    "store": store,
+                }
         finally:
             driver.quit()
     except Exception:
         pass
+
+    requests_fallback = scrape_with_requests(url, store)
+    if requests_fallback["price"] is not None:
+        return {
+            "title": requests_fallback["title"],
+            "price": requests_fallback["price"],
+            "store": store,
+        }
 
     fallback = scrape_with_api(url, store)
     return {
@@ -398,6 +570,9 @@ if st.sidebar.button("Update price", use_container_width=True):
             details = get_live_product_details(url_input)
             if details["price"] is None:
                 st.error("Could not detect the product price on that page.")
+                st.info(
+                    "Make sure you pasted the direct product page URL. Flipkart search, listing, or redirected pages usually do not expose a stable product price."
+                )
             else:
                 product = get_or_create_product(
                     data,
