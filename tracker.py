@@ -5,6 +5,7 @@ import pandas as pd
 import json
 import os
 from datetime import datetime
+import time
 
 # --- APP CONFIG ---
 st.set_page_config(page_title="Price Master", layout="wide")
@@ -22,21 +23,43 @@ def save_data(data):
     with open(DATA_FILE, "w") as f:
         json.dump(data, f)
 
-# --- SCRAPER LOGIC ---
+# --- SMART SCRAPER LOGIC ---
 def get_flipkart_price(url):
+    # Pro Headers: Flipkart ko lagega asli browser hai
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Referer": "https://www.google.com/",
+        "Connection": "keep-alive"
     }
+    
     try:
-        response = requests.get(url, headers=headers, timeout=15)
+        session = requests.Session()
+        response = session.get(url, headers=headers, timeout=20)
+        
         if response.status_code == 200:
             soup = BeautifulSoup(response.content, "html.parser")
-            # Flipkart Price Tag
-            price_box = soup.find("div", {"class": "Nx9bqj"})
-            if price_box:
-                price_text = price_box.text.replace("₹", "").replace(",", "")
-                return int(float(price_text))
+            
+            # Flipkart ke alag-alag price tags check karo
+            # Nx9bqj sabse naya hai, lekin backup ke liye dusre bhi rakhe hain
+            selectors = [
+                {"class": "Nx9bqj"}, 
+                {"class": "Nx9bqj C6R3Y2"},
+                {"class": "_30jeq3 _16Jk6d"}
+            ]
+            
+            price_text = None
+            for s in selectors:
+                tag = soup.find("div", s)
+                if tag:
+                    price_text = tag.text
+                    break
+            
+            if price_text:
+                price_val = int(''.join(filter(str.isdigit, price_text)))
+                return price_val
         return None
     except Exception as e:
         return None
@@ -48,46 +71,41 @@ st.markdown("Flipkart ke products ka price track karein aur target hit hone par 
 # Sidebar Controls
 st.sidebar.header("Settings")
 product_url = st.sidebar.text_input("Flipkart Link Yahan Dalein:")
-target_price = st.sidebar.number_input("Target Price (₹):", min_value=1, value=1000)
+target_price = st.sidebar.number_input("Target Price (₹):", min_value=1, value=3000)
 
 if st.sidebar.button("Update Price"):
     if product_url:
         if "flipkart.com" in product_url:
-            with st.spinner("Checking price..."):
+            with st.spinner("Flipkart se price nikal raha hoon... thoda sabar karein..."):
                 current_price = get_flipkart_price(product_url)
                 
                 if current_price:
                     data = load_data()
-                    
-                    # History Update
                     timestamp = datetime.now().strftime("%d/%m %H:%M")
                     data["history"].append({"Date": timestamp, "Price": current_price})
                     
-                    # Best Price Logic
                     if data["best_price"] is None or current_price < data["best_price"]:
                         data["best_price"] = current_price
                     
                     save_data(data)
-
-                    # Display Results
                     st.balloons()
+                    
                     col1, col2, col3 = st.columns(3)
                     col1.metric("Live Price", f"₹{current_price:,}")
-                    col2.metric("All-Time Best", f"₹{data['best_price']:,}")
+                    col2.metric("Best Price", f"₹{data['best_price']:,}")
                     col3.metric("Your Target", f"₹{target_price:,}")
 
-                    # Chart
                     df = pd.DataFrame(data["history"])
                     st.line_chart(df.set_index("Date"))
-
+                    
                     if current_price <= target_price:
-                        st.success("🎯 BINGO! Target hit ho gaya. Kharid lo!")
+                        st.success("🎯 BINGO! Target hit ho gaya!")
                 else:
-                    st.error("Price nahi mil paya. Ho sakta hai Flipkart ne block kiya ho, thodi der baad try karein.")
+                    st.error("Price nahi mil paya. Flipkart abhi block kar raha hai. Thodi der baad 'Update Price' phir se dabayein.")
         else:
-            st.warning("Bhai, sirf Flipkart links hi kaam karenge.")
+            st.warning("Bhai, sahi link dalo.")
     else:
-        st.info("Pehle product ka link copy-paste karo.")
+        st.info("Pehle link dalo.")
 
 if st.sidebar.button("Clear History"):
     if os.path.exists(DATA_FILE):
