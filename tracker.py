@@ -93,7 +93,12 @@ def parse_product_from_html(html, store):
     soup = BeautifulSoup(html, "html.parser")
     title = extract_title_from_soup(soup)
     price = extract_price_from_soup(soup, store)
-    return {"title": title or "Untitled product", "price": price}
+    availability = extract_availability_from_soup(soup)
+    return {
+        "title": title or "Untitled product",
+        "price": price,
+        "availability": availability,
+    }
 
 
 def build_driver():
@@ -300,6 +305,32 @@ def extract_price_from_jsonld(payload):
     return None
 
 
+def extract_availability_from_soup(soup):
+    texts = []
+    for selector in [
+        "#availability span",
+        "#outOfStock",
+        "div._16FRp0",
+        "button",
+        "span",
+    ]:
+        for node in soup.select(selector):
+            text = node.get_text(" ", strip=True)
+            if text:
+                texts.append(text.lower())
+
+    combined = " ".join(texts)
+    if "notify me" in combined:
+        return "out_of_stock"
+    if "out of stock" in combined:
+        return "out_of_stock"
+    if "currently unavailable" in combined:
+        return "out_of_stock"
+    if "available" in combined:
+        return "in_stock"
+    return "unknown"
+
+
 def dismiss_store_popups(driver, store):
     if store != "flipkart":
         return
@@ -371,7 +402,7 @@ def scrape_with_api(url, store):
         response = requests.get(proxy_url, timeout=120)
         response.raise_for_status()
     except Exception:
-        return {"title": None, "price": None}
+        return {"title": None, "price": None, "availability": "unknown"}
 
     soup = BeautifulSoup(response.content, "html.parser")
 
@@ -410,9 +441,17 @@ def scrape_with_api(url, store):
             continue
         price = extract_price(candidate.get_text(" ", strip=True) or candidate.get("content"))
         if price:
-            return {"title": title, "price": price}
+            return {
+                "title": title,
+                "price": price,
+                "availability": extract_availability_from_soup(soup),
+            }
 
-    return {"title": title, "price": None}
+    return {
+        "title": title,
+        "price": None,
+        "availability": extract_availability_from_soup(soup),
+    }
 
 
 def get_live_product_details(url):
@@ -429,7 +468,12 @@ def get_live_product_details(url):
             title = extract_title(driver)
             price = read_price_from_page(driver, store)
             if price is not None:
-                return {"title": title, "price": price, "store": store}
+                return {
+                    "title": title,
+                    "price": price,
+                    "store": store,
+                    "availability": "in_stock",
+                }
 
             parsed_html = parse_product_from_html(driver.page_source, store)
             if parsed_html["price"] is not None:
@@ -437,6 +481,7 @@ def get_live_product_details(url):
                     "title": parsed_html["title"],
                     "price": parsed_html["price"],
                     "store": store,
+                    "availability": parsed_html["availability"],
                 }
         finally:
             driver.quit()
@@ -449,6 +494,7 @@ def get_live_product_details(url):
             "title": requests_fallback["title"],
             "price": requests_fallback["price"],
             "store": store,
+            "availability": requests_fallback["availability"],
         }
 
     fallback = scrape_with_api(url, store)
@@ -456,6 +502,7 @@ def get_live_product_details(url):
         "title": fallback["title"] or "Untitled product",
         "price": fallback["price"],
         "store": store,
+        "availability": fallback.get("availability", "unknown"),
     }
 
 
@@ -569,10 +616,18 @@ if st.sidebar.button("Update price", use_container_width=True):
         with st.spinner("Fetching the latest product price..."):
             details = get_live_product_details(url_input)
             if details["price"] is None:
-                st.error("Could not detect the product price on that page.")
-                st.info(
-                    "Make sure you pasted the direct product page URL. Flipkart search, listing, or redirected pages usually do not expose a stable product price."
-                )
+                if details.get("availability") == "out_of_stock":
+                    st.warning(
+                        "This product page is currently showing as out of stock / Notify Me, so a live selling price is not available right now."
+                    )
+                    st.info(
+                        "Your Flipkart URL looks valid, but the page itself is not exposing an active sale price at the moment."
+                    )
+                else:
+                    st.error("Could not detect the product price on that page.")
+                    st.info(
+                        "Make sure you pasted the direct product page URL. Flipkart search, listing, or redirected pages usually do not expose a stable product price."
+                    )
             else:
                 product = get_or_create_product(
                     data,
