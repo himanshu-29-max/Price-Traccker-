@@ -7,8 +7,7 @@ from datetime import datetime
 
 # --- CONFIG (Apni API Key yahan dalo) ---
 # ScraperAPI dashboard se key copy karke yahan paste karo
-SCRAPER_API_KEY =98140924c53c3da8de89d24bccc92568 
-
+SCRAPER_API_KEY = "98140924c53c3da8de89d24bccc92568"
 st.set_page_config(page_title="Price Tracker Pro", layout="wide")
 
 def get_live_price(url):
