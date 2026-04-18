@@ -2,6 +2,7 @@
   const state = {
     adapter: null,
     productRecord: null,
+    range: "all",
     timer: null,
     observer: null
   };
@@ -17,12 +18,14 @@ async function bootstrap(state) {
 
   state.adapter = adapter;
   state.productRecord = await persistSnapshot(adapter);
+  state.productRecord = await hydrateFromBackend(state.productRecord);
+
   await chrome.runtime.sendMessage({
     type: "PRICE_TRACKER_PRODUCT_SEEN",
     payload: state.productRecord
   });
 
-  await renderOverlay(state);
+  renderOverlay(state);
   wireRealtimeTracking(state);
 }
 
@@ -51,117 +54,47 @@ async function persistSnapshot(adapter) {
   });
 }
 
-async function renderOverlay(state) {
-  const { adapter, productRecord } = state;
-  const { lineChartSvg, formatMoney, formatRelativeTime } = window.PriceTrackerUtils;
-  if (document.querySelector("#pt-root")) {
-    refreshOverlay(state);
-    return;
-  }
+async function hydrateFromBackend(productRecord) {
+  try {
+    const syncResult = await window.PriceTrackerApi.syncProduct(productRecord.url);
+    const backendProduct = syncResult?.data;
+    if (!backendProduct?.id) {
+      return productRecord;
+    }
 
-  const compareOffer = await window.PriceTrackerCompare.findComparableOffer({
-    ...productRecord,
-    price: productRecord.currentPrice
-  });
+    const historyResult = await window.PriceTrackerApi.fetchHistory(backendProduct.id, 180);
+    const backendHistory = window.PriceTrackerUtils.toHistoryPoints(
+      historyResult?.series?.[0]?.points?.map((point) => ({
+        y: point.y,
+        x: point.x
+      })) || []
+    );
 
-  const couponState = await window.PriceTrackerCoupons.runCouponDiscovery({
-    ...adapter,
-    price: productRecord.currentPrice
-  });
-
-  const root = document.createElement("aside");
-  root.id = "pt-root";
-  root.className = "pt-shell";
-  root.innerHTML = `
-    <button class="pt-toggle" type="button" aria-expanded="true">Price Tracker Pro</button>
-    <section class="pt-panel">
-      <header class="pt-header">
-        <div>
-          <p class="pt-kicker">${adapter.site.toUpperCase()}</p>
-          <h2 class="pt-title">${escapeHtml(productRecord.title)}</h2>
-          <div class="pt-live-row">
-            <span class="pt-live-dot"></span>
-            <span id="pt-live-status">Live tracking • updated ${formatRelativeTime(productRecord.updatedAt)}</span>
-          </div>
-        </div>
-        <div>
-          <div class="pt-price" id="pt-current-price">${formatMoney(productRecord.currentPrice, adapter.currencySymbol)}</div>
-          <div class="pt-helper" id="pt-price-delta">${buildPriceDeltaText(productRecord)}</div>
-        </div>
-      </header>
-      <div class="pt-section">
-        <div class="pt-section-head">
-          <span>Price history</span>
-          <span>${productRecord.history.length} points</span>
-        </div>
-        <div id="pt-chart-container">${lineChartSvg(productRecord.history)}</div>
-      </div>
-      <div class="pt-section">
-        <div class="pt-section-head">
-          <span>Target alert</span>
-          <span>${productRecord.targetPrice ? formatMoney(productRecord.targetPrice) : "Not set"}</span>
-        </div>
-        <form id="pt-alert-form" class="pt-alert-form">
-          <input id="pt-target-input" type="number" min="0" placeholder="Set target price" value="${productRecord.targetPrice || ""}" />
-          <button type="submit">Save</button>
-        </form>
-        <p class="pt-helper" id="pt-alert-message">
-          ${productRecord.targetPrice && productRecord.currentPrice <= productRecord.targetPrice
-            ? "Target reached. You should get a notification from the extension."
-            : "Set a target and the background worker will notify you when this page price drops to that level."}
-        </p>
-      </div>
-      <div class="pt-section">
-        <div class="pt-section-head">
-          <span>Compare prices</span>
-          <span>${compareOffer ? "Found" : "No lower match"}</span>
-        </div>
-        <div class="pt-compare-box">
-          ${
-            compareOffer
-              ? `<strong>${compareOffer.site}</strong> has a lower tracked price at ${formatMoney(compareOffer.price)}.
-                 <div class="pt-helper">You may save about ${formatMoney(compareOffer.difference)} if it is the same product variant.</div>`
-              : '<div class="pt-helper">As you browse more stores, the extension will compare against your tracked catalog automatically.</div>'
-          }
-        </div>
-      </div>
-      <div class="pt-section">
-        <div class="pt-section-head">
-          <span>Coupon finder</span>
-          <span>${couponState.status}</span>
-        </div>
-        <div class="pt-helper">${escapeHtml(couponState.message)}</div>
-      </div>
-    </section>
-  `;
-
-  adapter.anchor.prepend(root);
-
-  root.querySelector(".pt-toggle").addEventListener("click", () => {
-    const expanded = root.classList.toggle("pt-collapsed");
-    root.querySelector(".pt-toggle").setAttribute("aria-expanded", String(!expanded));
-  });
-
-  root.querySelector("#pt-alert-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const input = root.querySelector("#pt-target-input");
-    const targetPrice = Number(input.value || 0) || null;
-    const updated = await window.PriceTrackerStorage.upsertProduct(productRecord.key, (current) => ({
-      ...current,
-      targetPrice
+    return window.PriceTrackerStorage.upsertProduct(productRecord.key, (current) => ({
+      ...(current || {}),
+      ...productRecord,
+      backendProductId: backendProduct.id,
+      backendHistory,
+      history: mergeHistory(current?.history || [], backendHistory)
     }));
+  } catch (error) {
+    return productRecord;
+  }
+}
 
-    root.querySelector("#pt-alert-message").textContent = targetPrice
-      ? `Alert saved for ${formatMoney(targetPrice)}.`
-      : "Target price cleared.";
-
-    await chrome.runtime.sendMessage({
-      type: "PRICE_TRACKER_TARGET_UPDATED",
-      payload: updated
+function mergeHistory(localHistory, backendHistory) {
+  const merged = new Map();
+  [...(localHistory || []), ...(backendHistory || [])].forEach((point) => {
+    const ts = point.ts || Date.parse(point.x || "");
+    if (!Number.isFinite(ts)) {
+      return;
+    }
+    merged.set(ts, {
+      price: Number(point.price ?? point.y),
+      ts
     });
   });
-
-  refreshOverlay(state);
+  return [...merged.values()].sort((left, right) => left.ts - right.ts);
 }
 
 function wireRealtimeTracking(state) {
@@ -198,54 +131,234 @@ async function refreshSnapshot(state) {
   refreshOverlay(state);
 }
 
+function renderOverlay(state) {
+  if (document.querySelector("#pt-root")) {
+    refreshOverlay(state);
+    return;
+  }
+
+  const root = document.createElement("aside");
+  root.id = "pt-root";
+  root.className = "pt-shell";
+  root.innerHTML = `
+    <button class="pt-launcher" type="button" aria-expanded="true">
+      <span class="pt-brand-mark">b</span>
+      <span>pricehatke</span>
+    </button>
+    <section class="pt-panel">
+      <header class="pt-topbar">
+        <div class="pt-brand">
+          <span class="pt-brand-mark">b</span>
+          <span class="pt-brand-name">buyhatke style tracker</span>
+        </div>
+        <div class="pt-actions">
+          <button type="button" class="pt-mini-button">Wide</button>
+          <button type="button" class="pt-close-button" aria-label="Collapse tracker">-</button>
+        </div>
+      </header>
+      <div class="pt-banner">
+        <span class="pt-banner-icon">Hot</span>
+        <span id="pt-banner-text"></span>
+      </div>
+      <section class="pt-history-section">
+        <div class="pt-title-row">
+          <div>
+            <h2 class="pt-section-title">Price history</h2>
+            <p class="pt-section-subtitle" id="pt-over-average"></p>
+          </div>
+          <div class="pt-range-switcher">
+            <button type="button" class="pt-range-button" data-range="30">1M</button>
+            <button type="button" class="pt-range-button" data-range="90">3M</button>
+            <button type="button" class="pt-range-button" data-range="180">6M</button>
+            <button type="button" class="pt-range-button" data-range="all">All</button>
+          </div>
+        </div>
+        <div class="pt-history-actions">
+          <label class="pt-toggle-row">
+            <span>Show best offers</span>
+            <input id="pt-best-offer-toggle" type="checkbox" checked />
+          </label>
+          <span class="pt-linkish">View on tracker</span>
+        </div>
+        <div id="pt-chart-container"></div>
+      </section>
+      <section class="pt-stats-grid" id="pt-stats-grid"></section>
+      <section class="pt-bottom-grid">
+        <article class="pt-card" id="pt-recommend-card"></article>
+        <article class="pt-card">
+          <div class="pt-card-head">
+            <h3>Set price drop alert to buy later</h3>
+          </div>
+          <form id="pt-alert-form" class="pt-alert-box">
+            <input id="pt-target-input" type="number" min="0" placeholder="Target price" />
+            <button type="submit">Set price alert</button>
+          </form>
+          <p class="pt-helper" id="pt-alert-message"></p>
+        </article>
+      </section>
+      <section class="pt-meta-grid">
+        <article class="pt-card">
+          <div class="pt-card-head">
+            <h3>Compare prices</h3>
+          </div>
+          <div id="pt-compare-box" class="pt-helper"></div>
+        </article>
+        <article class="pt-card">
+          <div class="pt-card-head">
+            <h3>Coupon finder</h3>
+          </div>
+          <div id="pt-coupon-box" class="pt-helper"></div>
+        </article>
+      </section>
+    </section>
+  `;
+
+  document.body.append(root);
+
+  root.querySelector(".pt-launcher").addEventListener("click", () => {
+    root.classList.toggle("pt-collapsed");
+  });
+
+  root.querySelector(".pt-close-button").addEventListener("click", () => {
+    root.classList.add("pt-collapsed");
+  });
+
+  root.querySelectorAll(".pt-range-button").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.range = button.dataset.range;
+      refreshOverlay(state);
+    });
+  });
+
+  root.querySelector("#pt-alert-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const input = root.querySelector("#pt-target-input");
+    const targetPrice = Number(input.value || 0) || null;
+    state.productRecord = await window.PriceTrackerStorage.upsertProduct(state.productRecord.key, (current) => ({
+      ...(current || {}),
+      ...state.productRecord,
+      targetPrice
+    }));
+
+    root.querySelector("#pt-alert-message").textContent = targetPrice
+      ? `Alert saved for ${window.PriceTrackerUtils.formatMoney(targetPrice)}.`
+      : "Target alert cleared.";
+
+    await chrome.runtime.sendMessage({
+      type: "PRICE_TRACKER_TARGET_UPDATED",
+      payload: state.productRecord
+    });
+
+    refreshOverlay(state);
+  });
+
+  refreshOverlay(state);
+}
+
 async function refreshOverlay(state) {
   const root = document.querySelector("#pt-root");
   if (!root || !state.productRecord) {
     return;
   }
 
-  const { formatMoney, formatRelativeTime, lineChartSvg } = window.PriceTrackerUtils;
+  const { buildRecommendation, buildStats, filterHistoryByDays, formatMoney, formatRelativeTime, lineChartSvg } =
+    window.PriceTrackerUtils;
+
   const compareOffer = await window.PriceTrackerCompare.findComparableOffer({
     ...state.productRecord,
     price: state.productRecord.currentPrice
   });
+  const couponState = await window.PriceTrackerCoupons.runCouponDiscovery({
+    ...state.adapter,
+    price: state.productRecord.currentPrice
+  });
 
-  root.querySelector("#pt-current-price").textContent = formatMoney(
-    state.productRecord.currentPrice,
-    state.adapter.currencySymbol
-  );
-  root.querySelector("#pt-live-status").textContent = `Live tracking • updated ${formatRelativeTime(
-    state.productRecord.updatedAt
-  )}`;
-  root.querySelector("#pt-price-delta").textContent = buildPriceDeltaText(state.productRecord);
-  root.querySelector("#pt-chart-container").innerHTML = lineChartSvg(state.productRecord.history);
+  const sourceHistory = state.productRecord.backendHistory?.length
+    ? mergeHistory(state.productRecord.history || [], state.productRecord.backendHistory || [])
+    : state.productRecord.history || [];
+  const rangeDays = state.range === "all" ? "all" : Number(state.range);
+  const visibleHistory = filterHistoryByDays(sourceHistory, rangeDays);
+  const chartHistory = visibleHistory.length ? visibleHistory : sourceHistory;
+  const stats = buildStats(chartHistory);
+  const recommendation = buildRecommendation(chartHistory);
 
-  const compareHead = root.querySelector(".pt-section:nth-of-type(3) .pt-section-head span:last-child");
-  const compareBox = root.querySelector(".pt-compare-box");
-  if (compareOffer) {
-    compareHead.textContent = "Found";
-    compareBox.innerHTML = `<strong>${escapeHtml(compareOffer.site)}</strong> has a lower tracked price at ${formatMoney(
-      compareOffer.price
-    )}.<div class="pt-helper">You may save about ${formatMoney(compareOffer.difference)} if it is the same product variant.</div>`;
-  } else {
-    compareHead.textContent = "No lower match";
-    compareBox.innerHTML =
-      '<div class="pt-helper">As you browse more stores, the extension will compare against your tracked catalog automatically.</div>';
-  }
+  root.querySelector("#pt-banner-text").textContent = buildBannerText(stats, state.productRecord);
+  root.querySelector("#pt-over-average").textContent = buildVsAverageText(stats);
+  root.querySelector("#pt-chart-container").innerHTML = lineChartSvg(chartHistory);
+  root.querySelector("#pt-stats-grid").innerHTML = buildStatsGrid(stats, state.productRecord, compareOffer);
+  root.querySelector("#pt-recommend-card").innerHTML = buildRecommendationCard(recommendation, chartHistory.length);
+  root.querySelector("#pt-compare-box").innerHTML = buildCompareMarkup(compareOffer, formatMoney);
+  root.querySelector("#pt-coupon-box").textContent = couponState.message;
+  root.querySelector("#pt-target-input").value = state.productRecord.targetPrice || "";
+
+  const alertMessage = state.productRecord.targetPrice
+    ? `Watching for ${formatMoney(state.productRecord.targetPrice)}. Last update ${formatRelativeTime(state.productRecord.updatedAt)}.`
+    : `Current price ${formatMoney(state.productRecord.currentPrice)}. Save a threshold to get notified.`;
+  root.querySelector("#pt-alert-message").textContent = alertMessage;
+
+  root.querySelectorAll(".pt-range-button").forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.range === String(state.range));
+  });
 }
 
-function buildPriceDeltaText(productRecord) {
-  const history = productRecord.history || [];
-  if (history.length < 2) {
-    return "First tracked price point";
+function buildBannerText(stats, productRecord) {
+  if (!stats.current || !stats.lowest) {
+    return `Tracking ${productRecord.title} in real time`;
   }
-  const latest = history[history.length - 1].price;
-  const previous = history[history.length - 2].price;
-  const delta = latest - previous;
-  if (delta === 0) {
-    return "No change from last check";
+  const savings = Math.max(stats.current - stats.lowest, 0);
+  if (!savings) {
+    return "Current price is sitting near the tracked low";
   }
-  return delta < 0 ? `Down by Rs ${Math.abs(delta).toLocaleString()}` : `Up by Rs ${delta.toLocaleString()}`;
+  return `Price graphs suggest you could save up to Rs ${savings.toLocaleString()} by timing the buy better`;
+}
+
+function buildVsAverageText(stats) {
+  if (stats.currentVsAverage == null) {
+    return "Not enough history yet to compare against average price";
+  }
+  const direction = stats.currentVsAverage > 0 ? "higher" : "lower";
+  return `${Math.abs(stats.currentVsAverage).toFixed(2)}% ${direction} than average price`;
+}
+
+function buildStatsGrid(stats, productRecord, compareOffer) {
+  const average = stats.average != null ? stats.average : productRecord.currentPrice;
+  const lowest = stats.lowest != null ? stats.lowest : productRecord.currentPrice;
+  const highest = stats.highest != null ? stats.highest : productRecord.currentPrice;
+  const bestDeal = compareOffer?.price || lowest;
+  return [
+    statCard("Highest Price", highest, "neutral"),
+    statCard("Average Price", average, "neutral"),
+    statCard("Lowest Price", lowest, "good"),
+    statCard("Current Price", productRecord.currentPrice, "warning"),
+    statCard("Best Deal", bestDeal, "good")
+  ].join("");
+}
+
+function statCard(label, value, tone) {
+  return `
+    <article class="pt-stat-card tone-${tone}">
+      <div class="pt-stat-label">${label}</div>
+      <div class="pt-stat-value">Rs ${Math.round(value).toLocaleString()}</div>
+    </article>
+  `;
+}
+
+function buildRecommendationCard(recommendation, sampleSize) {
+  return `
+    <div class="pt-card-head">
+      <h3>Should you buy this now?</h3>
+    </div>
+    <div class="pt-recommend-pill tone-${recommendation.tone}">${recommendation.label}</div>
+    <p class="pt-helper">${recommendation.description}</p>
+    <div class="pt-helper">${sampleSize} tracked price points analyzed.</div>
+  `;
+}
+
+function buildCompareMarkup(compareOffer, formatMoney) {
+  if (!compareOffer) {
+    return "No lower tracked match found yet. As you browse more stores, this panel will compare them automatically.";
+  }
+  return `${escapeHtml(compareOffer.site)} currently looks cheaper at ${formatMoney(compareOffer.price)}. Estimated savings: ${formatMoney(compareOffer.difference)}.`;
 }
 
 function escapeHtml(value) {

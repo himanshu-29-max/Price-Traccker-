@@ -101,6 +101,86 @@
     return `${Math.round(deltaSeconds / 86400)}d ago`;
   }
 
+  function filterHistoryByDays(points, days) {
+    if (!Array.isArray(points) || !points.length || days === "all") {
+      return Array.isArray(points) ? points : [];
+    }
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+    return points.filter((point) => (point.ts || point.xTs || 0) >= cutoff);
+  }
+
+  function buildStats(points) {
+    if (!points.length) {
+      return {
+        average: null,
+        current: null,
+        currentVsAverage: null,
+        highest: null,
+        lowest: null
+      };
+    }
+
+    const prices = points.map((point) => Number(point.price));
+    const average = prices.reduce((sum, value) => sum + value, 0) / prices.length;
+    const current = prices[prices.length - 1];
+
+    return {
+      average,
+      current,
+      currentVsAverage: average ? ((current - average) / average) * 100 : null,
+      highest: Math.max(...prices),
+      lowest: Math.min(...prices)
+    };
+  }
+
+  function buildRecommendation(points) {
+    const stats = buildStats(points);
+    if (!points.length || stats.current == null || stats.average == null) {
+      return {
+        label: "Need more data",
+        tone: "neutral",
+        description: "Track this product over time to unlock stronger buy recommendations."
+      };
+    }
+
+    const ratio = stats.current / Math.max(stats.average, 1);
+    if (ratio <= 0.9) {
+      return {
+        label: "Good time to buy",
+        tone: "good",
+        description: "Current price is comfortably below its tracked average."
+      };
+    }
+    if (ratio <= 1.05) {
+      return {
+        label: "Fair deal",
+        tone: "okay",
+        description: "Current price is near its tracked average range."
+      };
+    }
+    return {
+      label: "Wait for a drop",
+      tone: "bad",
+      description: "Current price is above its tracked average. Setting an alert is safer."
+    };
+  }
+
+  function toHistoryPoints(points) {
+    if (!Array.isArray(points)) {
+      return [];
+    }
+    return points
+      .map((point) => {
+        const ts = point.ts || point.xTs || Date.parse(point.x || point.scraped_at || "");
+        return {
+          price: Number(point.price ?? point.y),
+          ts: Number.isNaN(ts) ? Date.now() : ts
+        };
+      })
+      .filter((point) => Number.isFinite(point.price))
+      .sort((left, right) => left.ts - right.ts);
+  }
+
   function createSparklinePath(points, width, height) {
     if (!points.length) {
       return "";
@@ -152,8 +232,11 @@
   }
 
   window.PriceTrackerUtils = {
+    buildRecommendation,
+    buildStats,
     createProductKey,
     extractDigits,
+    filterHistoryByDays,
     formatMoney,
     formatRelativeTime,
     lineChartSvg,
@@ -161,6 +244,7 @@
     readJsonLdProduct,
     readMetaContent,
     normalizeWhitespace,
-    slugify
+    slugify,
+    toHistoryPoints
   };
 })();

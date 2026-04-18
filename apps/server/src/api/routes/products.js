@@ -3,6 +3,7 @@ const { z } = require("zod");
 const { upsertUserAlert } = require("../../db/queries");
 const {
   fetchPriceHistoryChart,
+  lookupProductByUrl,
   scrapeAndStoreProduct
 } = require("../../services/price-tracking-service");
 const { asyncHandler } = require("../../utils/async-handler");
@@ -27,6 +28,15 @@ router.post(
     res.status(201).json({
       data: product
     });
+  })
+);
+
+router.get(
+  "/lookup",
+  asyncHandler(async (req, res) => {
+    const url = z.string().url().parse(req.query.url);
+    const product = await lookupProductByUrl(url);
+    res.json({ data: product });
   })
 );
 

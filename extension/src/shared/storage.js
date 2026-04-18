@@ -9,7 +9,8 @@
       "flipkart.com": ["NEWUSER", "SUPERCOIN"]
     },
     settings: {
-      compareWindowDays: 180
+      compareWindowDays: 180,
+      apiBaseUrl: "http://localhost:4000/api/v1"
     }
   };
 

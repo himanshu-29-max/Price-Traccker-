@@ -117,6 +117,14 @@ async function findProductByCanonicalKey(canonicalKey) {
   return rows[0] || null;
 }
 
+async function findProductByUrl(productUrl) {
+  const { rows } = await pool.query(
+    `SELECT * FROM products WHERE product_url = $1 ORDER BY updated_at DESC LIMIT 1;`,
+    [productUrl]
+  );
+  return rows[0] || null;
+}
+
 async function getPriceHistory(productId, rangeDays) {
   const { rows } = await pool.query(
     `
@@ -200,6 +208,7 @@ async function listRecentlyTrackedProducts(limit = 100) {
 module.exports = {
   findProductByCanonicalKey,
   findProductById,
+  findProductByUrl,
   getPriceHistory,
   insertPriceHistory,
   listActiveAlertsForCheck,

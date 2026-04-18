@@ -1,6 +1,7 @@
 const { toPriceChartResponse } = require("../../../../packages/shared/src");
 const {
   findProductById,
+  findProductByUrl,
   getPriceHistory,
   insertPriceHistory,
   listActiveAlertsForCheck,
@@ -52,6 +53,10 @@ async function fetchPriceHistoryChart(productId, rangeDays) {
   return toPriceChartResponse(product, history);
 }
 
+async function lookupProductByUrl(url) {
+  return findProductByUrl(url);
+}
+
 async function runPriceDropCheck(limit = 100) {
   const trackedProducts = await listRecentlyTrackedProducts(limit);
   for (const product of trackedProducts) {
@@ -80,6 +85,7 @@ async function runPriceDropCheck(limit = 100) {
 
 module.exports = {
   fetchPriceHistoryChart,
+  lookupProductByUrl,
   runPriceDropCheck,
   scrapeAndStoreProduct
 };

@@ -10,9 +10,8 @@
     "alarms"
   ],
   "host_permissions": [
-    "https://*.amazon.in/*",
-    "https://*.amazon.com/*",
-    "https://*.flipkart.com/*"
+    "*://*/*",
+    "http://localhost:4000/*"
   ],
   "background": {
     "service_worker": "src/background/service-worker.js"
@@ -24,13 +23,12 @@
   "content_scripts": [
     {
       "matches": [
-        "https://*.amazon.in/*",
-        "https://*.amazon.com/*",
-        "https://*.flipkart.com/*"
+        "*://*/*"
       ],
       "js": [
         "src/shared/utils.js",
         "src/shared/storage.js",
+        "src/shared/api.js",
         "src/content/adapters.js",
         "src/content/compare.js",
         "src/content/coupons.js",

@@ -123,6 +123,31 @@
     return ["checkout", "payment", "cart", "buy", "basket"].some((term) => href.includes(term));
   }
 
+  function genericProductAdapter() {
+    const title = resolveStructuredTitle();
+    const price = resolveStructuredPrice();
+    const anchor = resolveAnchor(["main", "[role='main']", "article", ".product", "body"]);
+
+    if (!title || !price || !anchor) {
+      return null;
+    }
+
+    return {
+      site: location.hostname.replace(/^www\./, ""),
+      domain: location.hostname,
+      currencySymbol: "Rs",
+      title,
+      price,
+      anchor,
+      url: location.href,
+      checkout: detectCheckoutPage(),
+      coupon: {
+        input: 'input[name*="coupon" i], input[name*="promo" i], input[placeholder*="coupon" i], input[placeholder*="promo" i]',
+        applyButton: "button, input[type='submit']"
+      }
+    };
+  }
+
   function getAdapter() {
     const host = location.hostname;
     if (host.includes("amazon.")) {
@@ -131,7 +156,7 @@
     if (host.includes("flipkart.")) {
       return flipkartProductAdapter();
     }
-    return null;
+    return genericProductAdapter();
   }
 
   window.PriceTrackerAdapters = {
